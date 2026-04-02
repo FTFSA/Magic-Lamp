@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cable Rig Controller v2</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0e17; color: #e2e8f0;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px; padding: 12px; min-height: 100vh;
+  }
+  button { font-family: inherit; cursor: pointer; transition: opacity 0.15s; outline: none; }
+  button:hover { opacity: 0.8; }
+  button:active { opacity: 0.6; }
+  input[type="number"], input[type="text"] {
+    background: #0a0e17; border: 1px solid #1e293b; border-radius: 4px;
+    padding: 4px 8px; color: #e2e8f0; font-family: inherit; font-size: 12px;
+    outline: none; width: 80px;
+  }
+  input:focus { border-color: #f59e0b; }
+
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; padding: 10px 14px;
+    background: #111827; border: 1px solid #1e293b; border-radius: 8px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 330px; gap: 12px; height: calc(100vh - 76px); }
+  .left { display: flex; flex-direction: column; gap: 12px; }
+  .right { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-right: 4px; }
+
+  .panel {
+    background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 12px;
+  }
+  .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .panel-t { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: #64748b; }
+
+  .canvas-box {
+    background: #080c14; border: 1px solid #1e293b; border-radius: 8px;
+    padding: 4px; flex: 1; min-height: 280px;
+  }
+  canvas { width: 100%; height: 100%; display: block; border-radius: 6px; }
+
+  .mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .mbtns { display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; }
+  .mpos { text-align: center; font-size: 22px; font-weight: 700; }
+  .mmm { text-align: center; font-size: 11px; color: #64748b; }
+
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .btn {
+    background: transparent; border: 1px solid #64748b; color: #64748b;
+    padding: 6px 12px; border-radius: 4px; font-size: 11px; font-weight: 500;
+  }
+  .btn-b { font-weight: 700; }
+  .btn-a { border-color: #f59e0b; color: #f59e0b; }
+  .btn-g { border-color: #10b981; color: #10b981; }
+  .btn-r { border-color: #ef4444; color: #ef4444; }
+  .btn-bl { border-color: #3b82f6; color: #3b82f6; }
+  .btn-p { border-color: #8b5cf6; color: #8b5cf6; }
+  .btn-L { border-color: #f59e0b; color: #f59e0b; }
+  .btn-R { border-color: #3b82f6; color: #3b82f6; }
+  .btn-fill-r { background: #ef4444; border-color: #ef4444; color: #fff; }
+  .btn-fill-g { background: #10b981; border-color: #10b981; color: #fff; }
+
+  .srow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .srow label { font-size: 11px; color: #64748b; min-width: 100px; }
+  .srow input { flex: 1; }
+
+  .wgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+  .wp { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid #1e293b; border-radius: 4px; margin-bottom: 4px; }
+  .wp.act { border-color: #f59e0b; background: rgba(245,158,11,0.08); }
+  .wp-n { color: #8b5cf6; font-weight: 700; font-size: 12px; min-width: 22px; }
+  .wp-p { flex: 1; font-size: 11px; }
+  .wp-b { padding: 2px 6px; font-size: 10px; }
+
+  .log { max-height: 120px; overflow-y: auto; font-size: 10px; line-height: 1.5; }
+  .log-tx { color: #f59e0b; }
+  .log-rx { color: #64748b; }
+  .log-sys { color: #10b981; }
+  .log-err { color: #ef4444; }
+
+  .tog { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .tog label { font-size: 11px; color: #64748b; min-width: 100px; }
+  .switch {
+    width: 36px; height: 20px; background: #334155; border-radius: 10px;
+    position: relative; cursor: pointer; transition: background 0.2s;
+  }
+  .switch.on { background: #10b981; }
+  .switch::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; background: #fff; border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .switch.on::after { transform: translateX(16px); }
+
+  .help { font-size: 10px; color: #475569; line-height: 1.6; margin-top: 4px; }
+
+  .empty { color: #64748b; font-size: 11px; text-align: center; padding: 14px; line-height: 1.8; }
+
+  .coupled-badge {
+    display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 9px;
+    font-weight: 700; margin-left: 6px;
+  }
+  .coupled-on { background: rgba(16,185,129,0.2); color: #10b981; }
+  .coupled-off { background: rgba(100,116,139,0.2); color: #64748b; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:12px">
+    <span style="font-size:18px;font-weight:700;color:#f59e0b">⚡ CABLE RIG</span>
+    <span style="font-size:11px;color:#64748b">v2</span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span id="dot" class="dot" style="background:#ef4444"></span>
+    <button id="connBtn" class="btn btn-g btn-b" onclick="toggleConn()">Connect</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="left">
+    <!-- Canvas -->
+    <div class="canvas-box">
+      <canvas id="cv" width="700" height="380"></canvas>
+    </div>
+
+    <!-- Motors -->
+    <div class="mgrid">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-t" style="color:#f59e0b">LEFT MOTOR · vertical</div>
+        </div>
+        <div class="mbtns">
+          <button class="btn btn-L btn-b" onclick="jogL(1)" title="W key">▲ Reel In</button>
+          <button class="btn btn-L btn-b" onclick="jogL(-1)" title="S key">▼ Pay Out</button>
+        </div>
+        <div class="mpos" style="color:#f59e0b" id="dL">0</div>
+        <div class="mmm" id="dLmm">0.0 mm · steps/mm: --</div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-t" style="color:#3b82f6">RIGHT MOTOR · tension/horizontal</div>
+        </div>
+        <div class="mbtns">
+          <button class="btn btn-R btn-b" onclick="jogR(1)" title="↑ key">▲ Reel In</button>
+          <button class="btn btn-R btn-b" onclick="jogR(-1)" title="↓ key">▼ Pay Out</button>
+        </div>
+        <div class="mpos" style="color:#3b82f6" id="dR">0</div>
+        <div class="mmm" id="dRmm">0.0 mm · steps/mm: --</div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="acts">
+      <button class="btn btn-fill-r btn-b" onclick="send('STOP')" style="padding:6px 16px">⏹ STOP</button>
+      <button class="btn" onclick="send('HOME')">🏠 Set Home</button>
+      <button class="btn btn-a" onclick="send('GOHOME')">↩ Return Home</button>
+      <button class="btn" onclick="send('POS')">📍 Get Pos</button>
+      <button class="btn btn-g" onclick="send('ENABLE')">🔒 Enable</button>
+      <button class="btn" onclick="send('DISABLE')">🔓 Disable</button>
+      <button class="btn btn-p btn-b" onclick="saveWP()">💾 Save Waypoint</button>
+    </div>
+  </div>
+
+  <!-- Right sidebar -->
+  <div class="right">
+    <!-- Coupled Mode -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-t" style="color:#10b981">COUPLED MODE</div>
+        <span id="cBadge" class="coupled-badge coupled-off">OFF</span>
+      </div>
+      <div class="help" style="margin-top:0;margin-bottom:8px">
+        When ON, jogging Left also moves Right to maintain string tension.
+        Tune the ratio until vertical motion stays straight.
+      </div>
+      <div class="tog">
+        <label>Coupled</label>
+        <div id="coupleToggle" class="switch" onclick="toggleCouple()"></div>
+      </div>
+      <div class="srow">
+        <label>R ratio per L</label>
+        <input type="number" id="ratioIn" value="0.3" min="0" max="5" step="0.05" onchange="updateRatio()">
+      </div>
+      <div class="help">
+        Example: 0.3 means for every 100 L steps, R moves 30 steps in the same direction.
+        Start low, increase until R keeps tension during vertical jogs.
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="panel">
+      <div class="panel-head"><div class="panel-t">SETTINGS</div></div>
+      <div class="srow">
+        <label>Jog steps</label>
+        <input type="number" id="jogIn" value="100" min="1" max="5000" onchange="jogStep=+this.value">
+      </div>
+      <div class="srow">
+        <label>Speed (steps/s)</label>
+        <input type="number" id="spdIn" value="600" min="10" max="5000" onchange="updSpeed(+this.value)">
+      </div>
+      <div class="srow">
+        <label>Steps per mm</label>
+        <input type="number" id="spmIn" value="80" min="1" max="500" onchange="stepsPerMM=+this.value;updDisp();draw()">
+      </div>
+      <div style="border-top:1px solid #1e293b;margin:8px 0;padding-top:8px">
+        <div style="font-size:10px;color:#64748b;margin-bottom:6px">DIRECTION FIX</div>
+        <div class="help" style="margin-bottom:6px">
+          If a motor moves the wrong way when you press Reel In, flip its direction here.
+        </div>
+        <div class="tog">
+          <label>Invert Left</label>
+          <div id="invLTog" class="switch" onclick="toggleInvL()"></div>
+        </div>
+        <div class="tog">
+          <label>Invert Right</label>
+          <div id="invRTog" class="switch" onclick="toggleInvR()"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Wind -->
+    <div class="panel">
+      <div class="panel-head"><div class="panel-t">WIND / UNWIND</div></div>
+      <div class="help" style="margin-bottom:6px">Hold button to wind continuously. Release to stop.</div>
+      <div class="wgrid">
+        <button class="btn btn-L" onpointerdown="windStart('WIND L')" onpointerup="windStop()" onpointerleave="windStop()">Wind L ▲</button>
+        <button class="btn btn-R" onpointerdown="windStart('WIND R')" onpointerup="windStop()" onpointerleave="windStop()">Wind R ▲</button>
+        <button class="btn btn-L" onpointerdown="windStart('UNWIND L')" onpointerup="windStop()" onpointerleave="windStop()">Unwind L ▼</button>
+        <button class="btn btn-R" onpointerdown="windStart('UNWIND R')" onpointerup="windStop()" onpointerleave="windStop()">Unwind R ▼</button>
+      </div>
+    </div>
+
+    <!-- Waypoints -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-t">WAYPOINTS</div>
+        <div style="display:flex;gap:4px">
+          <button id="playBtn" class="btn btn-g btn-b" onclick="startPlay()">▶ Play</button>
+          <button id="stopPBtn" class="btn btn-r btn-b" onclick="stopPlay()" style="display:none">⏹ Stop</button>
+        </div>
+      </div>
+      <div id="wpList">
+        <div class="empty">Jog to position → Save Waypoint<br>W/S = Left · ↑/↓ = Right · Space = Stop</div>
+      </div>
+    </div>
+
+    <!-- Keyboard -->
+    <div class="panel">
+      <div class="panel-head"><div class="panel-t">KEYBOARD</div></div>
+      <div style="font-size:10px;color:#64748b;line-height:1.8">
+        <b style="color:#f59e0b">W</b> / <b style="color:#f59e0b">S</b> — Left motor reel in / pay out
+        <span id="coupledKbd" style="display:none;color:#10b981"> (+ coupled R)</span><br>
+        <b style="color:#3b82f6">↑</b> / <b style="color:#3b82f6">↓</b> — Right motor reel in / pay out<br>
+        <b style="color:#ef4444">Space</b> — Emergency stop<br>
+        <b>P</b> — Request position
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="panel">
+      <div class="panel-head"><div class="panel-t">SERIAL LOG</div></div>
+      <div id="slog" class="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ───
+let port, reader, writer;
+let conn = false;
+let posL = 0, posR = 0;
+let jogStep = 100, speed = 600, stepsPerMM = 80;
+let coupled = false, coupleRatio = 0.3;
+let invL = false, invR = false;
+let wps = [], playing = false, curWP = -1, wpIdx = 0;
+let readBuf = "";
+const keys = new Set();
+
+// ─── Serial ───
+async function toggleConn() {
+  if (conn) {
+    try { reader?.cancel(); writer?.close(); await port?.close(); } catch(e) {}
+    conn = false; updConn(); alog("Disconnected","sys"); return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    conn = true; updConn(); alog("Connected","sys");
+    rloop();
+  } catch(e) { alog("Failed: "+e.message,"err"); }
+}
+async function rloop() {
+  reader = port.readable.getReader();
+  const dec = new TextDecoder();
+  try {
+    while(true) {
+      const {value,done} = await reader.read();
+      if(done) break;
+      readBuf += dec.decode(value);
+      const lines = readBuf.split("\n");
+      readBuf = lines.pop()||"";
+      for(const l of lines) { const t=l.trim(); if(t){alog(t,"rx");hmsg(t);} }
+    }
+  } catch(e) { if(e.name!=="NetworkError")console.error(e); }
+}
+async function send(c) { if(!writer)return; await writer.write(new TextEncoder().encode(c+"\n")); alog(c,"tx"); }
+
+// Wind button state tracking — prevents double-STOP
+let isWinding = false;
+function windStart(cmd) {
+  isWinding = true;
+  send(cmd);
+}
+function windStop() {
+  if (isWinding) {
+    isWinding = false;
+    send("STOP");
+  }
+}
+
+function hmsg(m) {
+  const p = m.match(/POS\s+L:(-?\d+)\s+R:(-?\d+)/);
+  if(p) { posL=+p[1]; posR=+p[2]; updDisp(); draw(); }
+  if(m==="DONE" && playing) playNext();
+}
+
+// ─── Jog with coupling ───
+function jogL(dir) {
+  const s = jogStep * dir;
+  if (coupled && coupleRatio > 0) {
+    send(`JL${s>0?'+':''}${s} C`);
+  } else {
+    send(`JL${s>0?'+':''}${s}`);
+  }
+}
+function jogR(dir) {
+  send(`JR${dir>0?'+':''}${jogStep*dir}`);
+}
+
+// ─── Settings ───
+function updSpeed(v) { speed=v; if(conn) send("SPEED "+v); }
+
+function toggleCouple() {
+  coupled = !coupled;
+  document.getElementById("coupleToggle").className = "switch" + (coupled?" on":"");
+  document.getElementById("cBadge").className = "coupled-badge " + (coupled?"coupled-on":"coupled-off");
+  document.getElementById("cBadge").textContent = coupled?"ON":"OFF";
+  document.getElementById("coupledKbd").style.display = coupled?"inline":"none";
+  updateRatio();
+}
+function updateRatio() {
+  coupleRatio = parseFloat(document.getElementById("ratioIn").value) || 0;
+  if(conn) send("COUPLE " + (coupled ? coupleRatio : 0));
+}
+
+function toggleInvL() {
+  invL=!invL;
+  document.getElementById("invLTog").className="switch"+(invL?" on":"");
+  if(conn) send("INVL "+(invL?"1":"0"));
+}
+function toggleInvR() {
+  invR=!invR;
+  document.getElementById("invRTog").className="switch"+(invR?" on":"");
+  if(conn) send("INVR "+(invR?"1":"0"));
+}
+
+// ─── Display ───
+function updDisp() {
+  document.getElementById("dL").textContent = posL;
+  document.getElementById("dR").textContent = posR;
+  document.getElementById("dLmm").textContent = (posL/stepsPerMM).toFixed(1)+" mm";
+  document.getElementById("dRmm").textContent = (posR/stepsPerMM).toFixed(1)+" mm";
+}
+function updConn() {
+  document.getElementById("dot").style.background = conn?"#10b981":"#ef4444";
+  document.getElementById("connBtn").textContent = conn?"Disconnect":"Connect";
+  document.getElementById("connBtn").className = conn?"btn btn-r btn-b":"btn btn-g btn-b";
+}
+
+// ─── Waypoints ───
+function saveWP() {
+  wps.push({posL, posR});
+  renderWP(); draw();
+}
+function delWP(i) { wps.splice(i,1); renderWP(); draw(); }
+function goWP(i) { send(`MOVE L${wps[i].posL} R${wps[i].posR} S${speed}`); }
+
+function startPlay() {
+  if(!wps.length) return;
+  playing=true; wpIdx=0; curWP=0;
+  document.getElementById("playBtn").style.display="none";
+  document.getElementById("stopPBtn").style.display="";
+  renderWP(); goWP(0);
+}
+function stopPlay() {
+  playing=false; curWP=-1;
+  document.getElementById("playBtn").style.display="";
+  document.getElementById("stopPBtn").style.display="none";
+  send("STOP"); renderWP();
+}
+function playNext() {
+  wpIdx++;
+  if(wpIdx>=wps.length){stopPlay();return;}
+  curWP=wpIdx; renderWP(); goWP(wpIdx);
+}
+function renderWP() {
+  const el=document.getElementById("wpList");
+  if(!wps.length){el.innerHTML='<div class="empty">Jog to position → Save Waypoint<br>W/S = Left · ↑/↓ = Right · Space = Stop</div>';return;}
+  el.innerHTML=wps.map((w,i)=>`
+    <div class="wp ${i===curWP?'act':''}">
+      <span class="wp-n">${i+1}</span>
+      <span class="wp-p"><span style="color:#f59e0b">L:${w.posL}</span> <span style="color:#3b82f6">R:${w.posR}</span></span>
+      <button class="btn wp-b" onclick="goWP(${i})">Go</button>
+      <button class="btn btn-r wp-b" onclick="delWP(${i})">✕</button>
+    </div>`).join("");
+}
+
+// ─── Keyboard ───
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT")return;
+  if(keys.has(e.key))return;
+  keys.add(e.key);
+  switch(e.key.toLowerCase()){
+    case"w": jogL(1); break;
+    case"s": jogL(-1); break;
+    case"arrowup": jogR(1); e.preventDefault(); break;
+    case"arrowdown": jogR(-1); e.preventDefault(); break;
+    case" ": send("STOP"); e.preventDefault(); break;
+    case"p": send("POS"); break;
+  }
+});
+document.addEventListener("keyup",e=>keys.delete(e.key));
+
+// ─── Canvas ───
+function draw() {
+  const c=document.getElementById("cv"), ctx=c.getContext("2d");
+  const W=c.width, H=c.height;
+  ctx.fillStyle="#080c14"; ctx.fillRect(0,0,W,H);
+
+  // Simple position-based visualization
+  // X axis = motor positions, show L and R as bars + payload indicator
+  const pad=50;
+  const usableW = W - pad*2;
+  const usableH = H - pad*2;
+
+  // Draw coordinate system
+  ctx.strokeStyle="#1e293b"; ctx.lineWidth=1;
+  // Axes
+  ctx.beginPath();
+  ctx.moveTo(pad, pad); ctx.lineTo(pad, H-pad); ctx.lineTo(W-pad, H-pad);
+  ctx.stroke();
+
+  // Labels
+  ctx.fillStyle="#64748b"; ctx.font="10px monospace";
+  ctx.fillText("L position (steps)", pad, pad-10);
+  ctx.fillText("R position (steps)", W-pad-100, H-pad+16);
+
+  // Find range for scaling
+  const allL = [posL, ...wps.map(w=>w.posL), 0];
+  const allR = [posR, ...wps.map(w=>w.posR), 0];
+  const minL=Math.min(...allL)-50, maxL=Math.max(...allL)+50;
+  const minR=Math.min(...allR)-50, maxR=Math.max(...allR)+50;
+  const rangeL=maxL-minL||100, rangeR=maxR-minR||100;
+
+  const sx = v => pad + ((v-minR)/rangeR)*usableW;
+  const sy = v => (H-pad) - ((v-minL)/rangeL)*usableH;
+
+  // Grid lines
+  ctx.strokeStyle="#1e293b"; ctx.lineWidth=0.5;
+  const stepSize = (v) => {
+    const r = v; if(r<200)return 20; if(r<500)return 50; if(r<2000)return 200; return 500;
+  };
+  const gsL=stepSize(rangeL), gsR=stepSize(rangeR);
+  for(let v=Math.ceil(minL/gsL)*gsL; v<=maxL; v+=gsL) {
+    ctx.beginPath(); ctx.moveTo(pad,sy(v)); ctx.lineTo(W-pad,sy(v)); ctx.stroke();
+    ctx.fillStyle="#334155"; ctx.fillText(v+"",pad-30,sy(v)+3);
+  }
+  for(let v=Math.ceil(minR/gsR)*gsR; v<=maxR; v+=gsR) {
+    ctx.beginPath(); ctx.moveTo(sx(v),pad); ctx.lineTo(sx(v),H-pad); ctx.stroke();
+    ctx.fillStyle="#334155"; ctx.fillText(v+"",sx(v)-10,H-pad+14);
+  }
+
+  // Zero crosshairs
+  ctx.strokeStyle="#334155"; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+  ctx.beginPath(); ctx.moveTo(sx(0),pad); ctx.lineTo(sx(0),H-pad); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(pad,sy(0)); ctx.lineTo(W-pad,sy(0)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Home marker
+  ctx.fillStyle="rgba(255,255,255,0.1)";
+  ctx.beginPath(); ctx.arc(sx(0),sy(0),6,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle="#64748b"; ctx.font="9px monospace";
+  ctx.fillText("HOME",sx(0)+8,sy(0)-6);
+
+  // Waypoint path
+  if(wps.length>1) {
+    ctx.strokeStyle="#8b5cf6"; ctx.lineWidth=1.5; ctx.globalAlpha=0.4;
+    ctx.beginPath();
+    wps.forEach((w,i)=>{if(i===0)ctx.moveTo(sx(w.posR),sy(w.posL));else ctx.lineTo(sx(w.posR),sy(w.posL));});
+    ctx.stroke(); ctx.globalAlpha=1;
+  }
+
+  // Waypoint dots
+  wps.forEach((w,i)=>{
+    const isAct = i===curWP;
+    ctx.fillStyle = isAct?"#c084fc":"#8b5cf6";
+    ctx.globalAlpha = isAct?1:0.6;
+    ctx.beginPath(); ctx.arc(sx(w.posR),sy(w.posL),5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#e2e8f0"; ctx.font="bold 9px monospace";
+    ctx.fillText(i+1+"",sx(w.posR)+7,sy(w.posL)+3);
+    ctx.globalAlpha=1;
+  });
+
+  // Current position
+  ctx.fillStyle="#10b981"; ctx.shadowColor="#10b981"; ctx.shadowBlur=14;
+  ctx.beginPath(); ctx.arc(sx(posR),sy(posL),7,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  // Position label
+  ctx.fillStyle="#e2e8f0"; ctx.font="11px monospace";
+  ctx.fillText(`L:${posL}  R:${posR}`, sx(posR)+12, sy(posL)+4);
+}
+
+// ─── Log ───
+function alog(m,t) {
+  const el=document.getElementById("slog");
+  const a=t==="tx"?"→":t==="rx"?"←":"●";
+  el.innerHTML+=`<div class="log-${t}"><span style="opacity:0.5">${a}</span> ${m}</div>`;
+  while(el.children.length>60)el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
+}
+
+// ─── Init ───
+draw(); updDisp();
+if(!("serial" in navigator)) alog("⚠ Web Serial not supported — use Chrome or Edge","err");
+</script>
+</body>
+</html>
