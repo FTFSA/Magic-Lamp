@@ -10,6 +10,7 @@ Controls a cable-driven positioning rig with two NEMA 17 stepper motors (TMC2209
 - Drives two TMC2209 steppers via shared UART
 - Non-blocking motion loop (jog, coordinated moves, continuous wind/unwind)
 - WiFi connectivity via WiFiNINA (serves HTML + WebSocket)
+- mDNS hostname advertisement so the controller can be reached by hostname instead of only numeric IP
 - Accepts commands over both USB Serial and WebSocket
 - Pushes real-time position updates to all connected WebSocket clients
 
@@ -37,6 +38,7 @@ Controls a cable-driven positioning rig with two NEMA 17 stepper motors (TMC2209
 | Direction inversion | Done |
 | Waypoint teach and playback | Done |
 | WiFi connectivity (WiFiNINA) | Building |
+| mDNS hostname discovery (`<hostname>.local`) | Planned |
 | WebSocket server (bidirectional) | Building |
 | Arduino serves HTML over WiFi | Building |
 | Mobile-responsive UI | Building |
@@ -53,9 +55,29 @@ Same protocol used over WebSocket (no newline needed — messages are framed).
 
 - Firmware compiles with zero errors
 - Arduino connects to WiFi and prints IP on Serial
+- Arduino advertises a stable mDNS hostname on the local network after joining WiFi
+- Browsing to `http://<hostname>.local` loads the control panel on mDNS-capable devices
 - Browsing to `http://<IP>` loads the control panel
 - Commands work over WebSocket (jog, stop, home, wind, etc.)
 - Position updates stream to all connected clients in real time
 - USB Serial still accepts commands
 - UI is usable on phone (large buttons, stacked layout)
 - Two clients can connect simultaneously
+
+## Planned Addition: mDNS Hostname Discovery
+
+Add local hostname discovery so the rig can be opened by a human-readable address such as `magic-lamp.local` instead of requiring the current DHCP IP address.
+
+### Scope
+- Set a readable device hostname during WiFi startup
+- Start an mDNS responder after WiFi connects successfully
+- Keep the existing direct-IP workflow working as a fallback
+- Print both the assigned IP and the advertised hostname to Serial for debugging
+- Update the web UI connection defaults so hostname-based access works when the page is opened via `.local`
+
+### Done Criteria for This Feature
+- Sketch compiles with the required mDNS dependency installed
+- Serial output shows the advertised hostname after WiFi connection succeeds
+- `http://<hostname>.local` serves the same control panel as the raw IP
+- WebSocket connection works when the page is opened via the mDNS hostname
+- If mDNS startup fails, the sketch keeps serving over IP and logs the failure instead of breaking WiFi control

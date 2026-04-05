@@ -52,6 +52,8 @@
 #include <TMCStepper.h>
 #include <SPI.h>
 #include <WiFiNINA.h>
+#include <WiFiUdp.h>
+#include <ArduinoMDNS.h>
 #include "wifi_config.h"
 #include "html_content.h"
 
@@ -100,7 +102,12 @@ bool motorsEnabled = true;
 String inputBuffer = "";
 
 // ============ WiFi + WebSocket ============
+const char DEVICE_HOSTNAME[] = "magic-lamp";
+const char MDNS_HTTP_SERVICE[] = "Magic Lamp._http";
 WiFiServer server(80);
+WiFiUDP mdnsUDP;
+MDNS mdns(mdnsUDP);
+bool mdnsReady = false;
 
 #define MAX_WS_CLIENTS 4
 WiFiClient wsClients[MAX_WS_CLIENTS];
@@ -359,6 +366,30 @@ void configureDriver(TMC2209Stepper &drv, char label) {
   else { Serial.print(" FAIL:"); Serial.println(result); }
 }
 
+bool startMDNS() {
+  int result = mdns.begin(WiFi.localIP(), DEVICE_HOSTNAME);
+  if (result != 1) {
+    mdnsReady = false;
+    Serial.print("mDNS start failed: ");
+    Serial.println(result);
+    return false;
+  }
+
+  mdnsReady = true;
+  mdns.removeAllServiceRecords();
+
+  int svc = mdns.addServiceRecord(MDNS_HTTP_SERVICE, 80, MDNSServiceTCP);
+  if (svc != 1) {
+    Serial.print("mDNS service add failed: ");
+    Serial.println(svc);
+  }
+
+  Serial.print("Hostname: http://");
+  Serial.print(DEVICE_HOSTNAME);
+  Serial.println(".local");
+  return true;
+}
+
 void setupWiFi() {
   if (WiFi.status() == WL_NO_MODULE) {
     Serial.println("WiFi module not found");
@@ -396,6 +427,8 @@ void safetyStop() {
 void startWiFiConnect() {
   WiFi.disconnect();
   WiFi.end();
+  mdnsReady = false;
+  WiFi.setHostname(DEVICE_HOSTNAME);
 
   // Drop all WebSocket clients cleanly
   for (int i = 0; i < MAX_WS_CLIENTS; i++) {
@@ -452,6 +485,7 @@ void tickWiFi() {
         Serial.println(WiFi.localIP());
         server.begin();
         Serial.println("Server :80 (HTTP + WS)");
+        startMDNS();
       } else if (now - wifiStateTime >= 15000) {
         Serial.println("WiFi connect timeout - will retry");
         wifiState = WIFI_WAITING;
@@ -463,9 +497,11 @@ void tickWiFi() {
       if (WiFi.status() != WL_CONNECTED) {
         Serial.println("WiFi lost");
         safetyStop();
+        mdnsReady = false;
         wifiState = WIFI_WAITING;
         wifiStateTime = now;
       } else {
+        if (mdnsReady) mdns.run();
         pollWSClients();
         // IMPORTANT: process existing WS traffic before calling server.available().
         // On this WiFi stack, server.available() can surface an already-upgraded

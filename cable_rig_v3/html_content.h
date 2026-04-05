@@ -334,6 +334,7 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
 
 <script>
 // --- State ---
+const DEFAULT_HOST = 'magic-lamp.local';
 let ws = null;
 let conn = false;
 let reconnectTimer = null;
@@ -347,7 +348,7 @@ const keys = new Set();
 // --- WebSocket ---
 function wsConnect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return;
-  const host = window.location.hostname || '192.168.1.1';
+  const host = window.location.hostname || DEFAULT_HOST;
   alog('Connecting to ' + host + '...', 'sys');
   try {
     ws = new WebSocket('ws://' + host + ':80');
@@ -636,6 +637,7 @@ function alog(m, t) {
 }
 
 // --- Init ---
+document.getElementById('ipLabel').textContent = window.location.hostname || DEFAULT_HOST;
 draw(); updDisp();
 wsConnect();
 </script>
