@@ -100,8 +100,7 @@ bool motorsEnabled = true;
 String inputBuffer = "";
 
 // ============ WiFi + WebSocket ============
-WiFiServer httpServer(80);
-WiFiServer wsServerListener(81);
+WiFiServer server(80);
 
 #define MAX_WS_CLIENTS 4
 WiFiClient wsClients[MAX_WS_CLIENTS];
@@ -112,9 +111,16 @@ unsigned long lastStatusPush = 0;
 const unsigned long STATUS_PUSH_MS = 200;
 long lastPushedL = -99999, lastPushedR = -99999;
 
-bool wifiReady = false;
-unsigned long lastWiFiCheck = 0;
-const unsigned long WIFI_CHECK_MS = 5000;  // Check WiFi every 5 seconds
+// WiFi state machine (non-blocking)
+enum WiFiState { WIFI_IDLE, WIFI_DISCONNECTING, WIFI_WAITING, WIFI_CONNECTING, WIFI_CONNECTED };
+WiFiState wifiState = WIFI_IDLE;
+unsigned long wifiStateTime = 0;
+const unsigned long WIFI_RETRY_MS = 3000;
+const unsigned long WIFI_DISCONNECT_MS = 200;
+
+// Client watchdog
+unsigned long lastClientSeen = 0;
+const unsigned long CLIENT_TIMEOUT_MS = 10000;  // 10s with no client = auto-stop
 
 // ============ SHA-1 for WebSocket handshake ============
 // Minimal SHA-1 implementation (RFC 3174)
@@ -220,8 +226,10 @@ void wsSendClose(WiFiClient& client) {
 }
 
 // Read and process one WebSocket frame from a client, returns command or ""
+// Requires at least 2 bytes (header) before reading to avoid consuming partial frames.
+// If the frame is incomplete, the connection is closed since the stream is now corrupted.
 String wsReadFrame(WiFiClient& client) {
-  if (!client.available()) return "";
+  if (client.available() < 2) return "";  // need both header bytes before touching the buffer
 
   uint8_t b0 = client.read();
   uint8_t b1 = client.read();
@@ -230,30 +238,41 @@ String wsReadFrame(WiFiClient& client) {
   size_t payloadLen = b1 & 0x7F;
 
   if (payloadLen == 126) {
+    unsigned long t = millis() + 20;
+    while (client.available() < 2 && millis() < t) {}
+    if (client.available() < 2) { client.stop(); return ""; }  // stream corrupted
     uint8_t ext[2];
     client.read(ext, 2);
     payloadLen = ((size_t)ext[0] << 8) | ext[1];
   } else if (payloadLen == 127) {
-    // Skip 8-byte extended length (unlikely for commands)
+    unsigned long t = millis() + 20;
+    while (client.available() < 8 && millis() < t) {}
+    if (client.available() < 8) { client.stop(); return ""; }  // stream corrupted
     uint8_t ext[8];
     client.read(ext, 8);
-    payloadLen = ((size_t)ext[6] << 8) | ext[7]; // Only use lower 16 bits
+    payloadLen = ((size_t)ext[6] << 8) | ext[7]; // only use lower 16 bits
   }
 
   uint8_t mask[4] = {0, 0, 0, 0};
-  if (masked) client.read(mask, 4);
+  if (masked) {
+    unsigned long t = millis() + 20;
+    while (client.available() < 4 && millis() < t) {}
+    if (client.available() < 4) { client.stop(); return ""; }  // stream corrupted
+    client.read(mask, 4);
+  }
 
   // Read payload (cap at 256 bytes for safety)
   size_t toRead = min(payloadLen, (size_t)256);
   uint8_t payload[256];
   size_t got = 0;
-  unsigned long timeout = millis() + 200;
+  unsigned long timeout = millis() + 20;  // 200ms → 20ms: local WiFi delivers in <5ms
   while (got < toRead && millis() < timeout) {
     if (client.available()) {
       payload[got] = client.read();
       got++;
     }
   }
+  if (got < toRead) { client.stop(); return ""; }  // incomplete frame would desync the stream
   // Skip any remaining bytes we didn't read
   for (size_t i = got; i < payloadLen && client.available(); i++) client.read();
 
@@ -276,7 +295,10 @@ String wsReadFrame(WiFiClient& client) {
   }
   if (opcode == 0x01 || opcode == 0x02) {
     // Text or binary frame -> return as command
-    return String((char*)payload).substring(0, got);
+    String msg = "";
+    msg.reserve(got);
+    for (size_t i = 0; i < got; i++) msg += (char)payload[i];
+    return msg;
   }
   return "";
 }
@@ -340,10 +362,11 @@ void configureDriver(TMC2209Stepper &drv, char label) {
 void setupWiFi() {
   if (WiFi.status() == WL_NO_MODULE) {
     Serial.println("WiFi module not found");
+    wifiState = WIFI_WAITING;
+    wifiStateTime = millis();
     return;
   }
 
-  // Print firmware version for debugging
   String fv = WiFi.firmwareVersion();
   Serial.print("WiFi FW: ");
   Serial.println(fv);
@@ -351,46 +374,114 @@ void setupWiFi() {
     Serial.println("WARNING: WiFi firmware outdated");
   }
 
-  connectWiFi();
+  wifiState = WIFI_IDLE;  // tickWiFi() will start connection
 }
 
-void connectWiFi() {
-  // Clean disconnect first — prevents the module from getting stuck
-  WiFi.disconnect();
-  delay(100);
-  WiFi.end();
-  delay(500);
+// Stop all motors immediately — called when communication is lost
+void safetyStop() {
+  bool wasMoving = windingL || windingR || coordMoving ||
+                   (targetL != posL) || (targetR != posR);
 
-  // Drop all WebSocket clients
-  for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-    if (wsReady[i]) { wsClients[i].stop(); wsReady[i] = false; }
+  windingL = false;
+  windingR = false;
+  coordMoving = false;
+  targetL = posL;
+  targetR = posR;
+
+  if (wasMoving) {
+    Serial.println("SAFETY STOP: WiFi lost while motors moving");
   }
-  wifiReady = false;
+}
 
+void startWiFiConnect() {
+  WiFi.disconnect();
+  WiFi.end();
+
+  // Drop all WebSocket clients cleanly
+  for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+    if (wsReady[i]) {
+      wsSendClose(wsClients[i]);
+      wsClients[i].stop();
+      wsReady[i] = false;
+    }
+  }
+
+  wifiState = WIFI_DISCONNECTING;
+  wifiStateTime = millis();
   Serial.print("WiFi: connecting to [");
   Serial.print(WIFI_SSID);
   Serial.println("]");
+}
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(500);
-    Serial.print(".");
+void pushStatus() {
+  unsigned long nowMs = millis();
+  if (nowMs - lastStatusPush >= STATUS_PUSH_MS) {
+    lastStatusPush = nowMs;
+    if (posL != lastPushedL || posR != lastPushedR) {
+      String msg = "POS L:" + String(posL) + " R:" + String(posR);
+      wsBroadcast(msg);
+      lastPushedL = posL;
+      lastPushedR = posR;
+    }
   }
-  Serial.println();
+}
 
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiReady = true;
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    httpServer.begin();
-    wsServerListener.begin();
-    Serial.println("HTTP :80  WS :81");
-  } else {
-    Serial.print("WiFi FAILED (status ");
-    Serial.print(WiFi.status());
-    Serial.println(") - will retry in 5s");
+void tickWiFi() {
+  unsigned long now = millis();
+
+  switch (wifiState) {
+    case WIFI_IDLE:
+      startWiFiConnect();
+      break;
+
+    case WIFI_DISCONNECTING:
+      if (now - wifiStateTime >= WIFI_DISCONNECT_MS) {
+        WiFi.begin(WIFI_SSID, WIFI_PASS);
+        wifiState = WIFI_CONNECTING;
+        wifiStateTime = now;
+      }
+      break;
+
+    case WIFI_CONNECTING:
+      if (WiFi.status() == WL_CONNECTED) {
+        wifiState = WIFI_CONNECTED;
+        wifiStateTime = now;
+        lastClientSeen = now;
+        WiFi.noLowPowerMode();
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        server.begin();
+        Serial.println("Server :80 (HTTP + WS)");
+      } else if (now - wifiStateTime >= 15000) {
+        Serial.println("WiFi connect timeout - will retry");
+        wifiState = WIFI_WAITING;
+        wifiStateTime = now;
+      }
+      break;
+
+    case WIFI_CONNECTED:
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi lost");
+        safetyStop();
+        wifiState = WIFI_WAITING;
+        wifiStateTime = now;
+      } else {
+        pollWSClients();
+        // IMPORTANT: process existing WS traffic before calling server.available().
+        // On this WiFi stack, server.available() can surface an already-upgraded
+        // WebSocket client when it has pending bytes. If we call handleNewClient()
+        // first, those WS frame bytes get misread as a fresh HTTP request and the
+        // board replies with "HTTP/1.1 200 OK", corrupting the WS stream.
+        handleNewClient();
+        pushStatus();
+      }
+      break;
+
+    case WIFI_WAITING:
+      if (now - wifiStateTime >= WIFI_RETRY_MS) {
+        startWiFiConnect();
+      }
+      break;
   }
 }
 
@@ -412,35 +503,17 @@ void loop() {
     }
   }
 
-  // 2. WiFi: HTTP + WebSocket (non-blocking)
-  unsigned long nowMs = millis();
-  if (wifiReady) {
-    // Check if WiFi dropped
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi lost - reconnecting...");
-      wifiReady = false;
-      lastWiFiCheck = nowMs;
-    } else {
-      handleHTTP();
-      handleNewWSClient();
-      pollWSClients();
+  // 2. WiFi: non-blocking state machine
+  tickWiFi();
 
-      // Status push (change-detect, every 200ms)
-      if (nowMs - lastStatusPush >= STATUS_PUSH_MS) {
-        lastStatusPush = nowMs;
-        if (posL != lastPushedL || posR != lastPushedR) {
-          String msg = "POS L:" + String(posL) + " R:" + String(posR);
-          wsBroadcast(msg);
-          lastPushedL = posL;
-          lastPushedR = posR;
-        }
-      }
-    }
-  } else {
-    // WiFi not connected — try to reconnect every 5 seconds
-    if (nowMs - lastWiFiCheck >= WIFI_CHECK_MS) {
-      lastWiFiCheck = nowMs;
-      connectWiFi();
+  // 3. Client watchdog: stop motors if no client for 10s
+  if (wifiState == WIFI_CONNECTED && millis() - lastClientSeen >= CLIENT_TIMEOUT_MS) {
+    bool motorsActive = windingL || windingR || coordMoving ||
+                        (targetL != posL) || (targetR != posR);
+    if (motorsActive) {
+      safetyStop();
+      Serial.println("WATCHDOG: No client for 10s, motors stopped");
+      lastClientSeen = millis();  // reset so we don't spam
     }
   }
 
@@ -470,68 +543,22 @@ void loop() {
   }
 }
 
-// ============ HTTP HANDLER ============
+// ============ CLIENT HANDLER (HTTP + WebSocket on single port) ============
 
-void handleHTTP() {
-  WiFiClient client = httpServer.available();
+void handleNewClient() {
+  WiFiClient client = server.available();
   if (!client) return;
+  if (!client.available()) return;
+  if (client.peek() != 'G') return;  // existing WS frame data can reappear here; ignore non-HTTP traffic
 
-  // Read and discard the entire HTTP request
-  unsigned long timeout = millis() + 500;
-  bool headersDone = false;
-  int emptyLines = 0;
-  while (client.connected() && millis() < timeout && !headersDone) {
+  // Read HTTP request headers, look for WebSocket upgrade
+  String wsKey = "";
+  String line = "";
+  unsigned long timeout = millis() + 200;  // keep short — 1000ms was starving the main loop
+
+  while (client.connected() && millis() < timeout) {
     if (client.available()) {
       char c = client.read();
-      if (c == '\n') {
-        emptyLines++;
-        if (emptyLines >= 2) headersDone = true;
-      } else if (c != '\r') {
-        emptyLines = 0;
-      }
-    }
-  }
-
-  // Serve HTML
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/html; charset=utf-8");
-  client.println("Connection: close");
-  client.println();
-
-  const int CHUNK = 512;
-  int len = strlen_P(HTML_CONTENT);
-  char buf[CHUNK];
-  for (int i = 0; i < len; i += CHUNK) {
-    int toRead = min(CHUNK, len - i);
-    memcpy_P(buf, HTML_CONTENT + i, toRead);
-    client.write(buf, toRead);
-  }
-  client.stop();
-}
-
-// ============ WebSocket HANDLERS ============
-
-void handleNewWSClient() {
-  WiFiClient newClient = wsServerListener.available();
-  if (!newClient) return;
-
-  // Find a free slot
-  int slot = -1;
-  for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-    if (!wsClients[i].connected() && !wsReady[i]) { slot = i; break; }
-  }
-  if (slot < 0) {
-    newClient.stop();
-    return;
-  }
-
-  // Read HTTP upgrade request, extract Sec-WebSocket-Key
-  String wsKey = "";
-  unsigned long timeout = millis() + 1000;
-  String line = "";
-  while (newClient.connected() && millis() < timeout) {
-    if (newClient.available()) {
-      char c = newClient.read();
       if (c == '\n') {
         line.trim();
         if (line.length() == 0) break; // End of headers
@@ -546,36 +573,55 @@ void handleNewWSClient() {
     }
   }
 
-  if (wsKey.length() == 0) {
-    newClient.stop();
-    return;
+  if (wsKey.length() > 0) {
+    // --- WebSocket upgrade ---
+    int slot = -1;
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+      if (!wsClients[i].connected() && !wsReady[i]) { slot = i; break; }
+    }
+    if (slot < 0) { client.stop(); return; }
+
+    // Compute accept key: SHA1(key + magic GUID), then base64
+    String combined = wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    uint8_t hash[20];
+    sha1((const uint8_t*)combined.c_str(), combined.length(), hash);
+    String acceptKey = base64Encode(hash, 20);
+
+    client.println("HTTP/1.1 101 Switching Protocols");
+    client.println("Upgrade: websocket");
+    client.println("Connection: Upgrade");
+    client.print("Sec-WebSocket-Accept: ");
+    client.println(acceptKey);
+    client.println();
+
+    wsClients[slot] = client;
+    wsReady[slot] = true;
+    wsInputBuf[slot] = "";
+
+    sendStatusToClient(slot);
+    Serial.print("WS client connected: slot ");
+    Serial.println(slot);
+  } else {
+    // --- Regular HTTP → serve HTML ---
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+
+    const int CHUNK = 512;
+    int len = strlen_P(HTML_CONTENT);
+    char buf[CHUNK];
+    for (int i = 0; i < len; i += CHUNK) {
+      int toRead = min(CHUNK, len - i);
+      memcpy_P(buf, HTML_CONTENT + i, toRead);
+      client.write(buf, toRead);
+    }
+    client.stop();
   }
-
-  // Compute accept key: SHA1(key + magic GUID), then base64
-  String combined = wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-  uint8_t hash[20];
-  sha1((const uint8_t*)combined.c_str(), combined.length(), hash);
-  String acceptKey = base64Encode(hash, 20);
-
-  // Send upgrade response
-  newClient.println("HTTP/1.1 101 Switching Protocols");
-  newClient.println("Upgrade: websocket");
-  newClient.println("Connection: Upgrade");
-  newClient.print("Sec-WebSocket-Accept: ");
-  newClient.println(acceptKey);
-  newClient.println();
-
-  wsClients[slot] = newClient;
-  wsReady[slot] = true;
-  wsInputBuf[slot] = "";
-
-  // Send full status to new client
-  sendStatusToClient(slot);
-  Serial.print("WS client connected: slot ");
-  Serial.println(slot);
 }
 
 void pollWSClients() {
+  bool anyClient = false;
   for (int i = 0; i < MAX_WS_CLIENTS; i++) {
     if (!wsReady[i]) continue;
     if (!wsClients[i].connected()) {
@@ -584,6 +630,7 @@ void pollWSClients() {
       Serial.println(i);
       continue;
     }
+    anyClient = true;
     if (wsClients[i].available()) {
       String cmd = wsReadFrame(wsClients[i]);
       cmd.trim();
@@ -591,6 +638,9 @@ void pollWSClients() {
         processCommand(cmd);
       }
     }
+  }
+  if (anyClient) {
+    lastClientSeen = millis();
   }
 }
 

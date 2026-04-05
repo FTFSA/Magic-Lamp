@@ -347,7 +347,7 @@ const keys = new Set();
 function wsConnect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return;
   const host = window.location.hostname || '192.168.1.1';
-  alog('Connecting to ' + host + ':81...', 'sys');
+  alog('Connecting to ' + host + '...', 'sys');
   try {
     ws = new WebSocket('ws://' + host + ':81');
   } catch(e) {
@@ -358,6 +358,20 @@ function wsConnect() {
     conn = true; updConn();
     alog('Connected', 'sys');
     if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+
+    // Safety: send STOP if wind was active during disconnect
+    if (pendingWindStop) {
+      send('STOP');
+      pendingWindStop = false;
+      alog('Sent safety STOP (wind was active)', 'sys');
+    }
+
+    // Resync: request position and resend UI settings
+    send('POS');
+    send('SPEED ' + speed);
+    send('COUPLE ' + (coupled ? coupleRatio : 0));
+    send('INVL ' + (invL ? '1' : '0'));
+    send('INVR ' + (invR ? '1' : '0'));
   };
   ws.onmessage = function(evt) {
     var lines = evt.data.split('\n');
@@ -368,10 +382,14 @@ function wsConnect() {
   };
   ws.onclose = function() {
     conn = false; updConn();
+    keys.clear();  // Prevent stuck keys from lost keyup events
+    if (isWinding) { pendingWindStop = true; isWinding = false; }
+    if (playing) { stopPlay(); }
     alog('Disconnected', 'sys');
     scheduleReconnect();
   };
   ws.onerror = function() {
+    try { if (ws && ws.readyState === WebSocket.OPEN) ws.send('STOP'); } catch(e) {}
     if (ws) ws.close();
   };
 }
@@ -401,6 +419,7 @@ function send(c) {
 
 // Wind button state tracking
 var isWinding = false;
+var pendingWindStop = false;
 function windStart(cmd) {
   isWinding = true;
   send(cmd);
@@ -525,6 +544,7 @@ document.addEventListener('keydown', function(e) {
   }
 });
 document.addEventListener('keyup', function(e) { keys.delete(e.key); });
+window.addEventListener('blur', function() { keys.clear(); });
 
 // --- Canvas ---
 function draw() {
