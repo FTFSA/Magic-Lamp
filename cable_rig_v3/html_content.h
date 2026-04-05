@@ -1,3 +1,4 @@
+const char HTML_CONTENT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -620,3 +621,4 @@ wsConnect();
 </script>
 </body>
 </html>
+)rawliteral";
